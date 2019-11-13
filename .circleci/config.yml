@@ -1,0 +1,103 @@
+# 2019.11.11 Ver.16
+version: 2.1
+orbs:
+  slack: circleci/slack@3.3.0
+executors:
+  go-executor:
+    docker:
+      - image: circleci/golang:1.13.4
+  terraform-executor:
+    docker:
+      - image: hashicorp/terraform:0.11.14
+  ibm-terraform:
+    docker:
+      - image: ibmterraform/terraform-provider-ibm-docker:v0.18.0
+
+jobs:
+  start-workflow:
+    docker:
+      - image: 'circleci/python:2.7'
+    steps:
+      - run:
+          name: Workflow Start job
+          command: |
+            echo "Workflow Start!"
+            echo ${CIRCLE_BUILD_URL}
+            echo ${CIRCLE_COMPARE_URL}
+            echo ${CIRCLE_JOB}
+  test-iac:
+    executor: go-executor
+    working_directory: /go/src/terratest/
+    steps:
+      - checkout
+      - run: curl -L -s https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-amd64 -o /go/bin/dep && chmod +x /go/bin/dep
+      - run: curl -L -s https://releases.hashicorp.com/packer/1.2.3/packer_1.2.3_linux_amd64.zip -o /go/bin/packer.zip && unzip /go/bin/packer.zip -d /go/bin && chmod +x /go/bin/packer
+      - run: curl -L -s https://releases.hashicorp.com/terraform/0.11.14/terraform_0.11.14_linux_amd64.zip -o /go/bin/terraform.zip && unzip /go/bin/terraform.zip -d /go/bin && chmod +x /go/bin/terraform
+      - run: cd test; dep init
+      - run: cd test; go test -v -run TestTerraformAwsNetworkExample
+  aws-apply:
+    executor: terraform-executor
+    working_directory: ~/project
+    steps:
+      - checkout
+      - run:
+          command: |
+            cd ~/project/aws
+            terraform init -input=false
+            terraform apply -auto-approve
+  ibm-apply:
+    executor: ibm-terraform
+    working_directory: ~/project
+    steps:
+      - checkout
+      - run:
+          command: |
+            cd ~/project/ibm
+            mkdir -p ~/project/ibm/ansible/
+            apk add python python-dev py-pip libffi-dev openssl-dev openssh-client
+            pip install ansible -U
+            pip install netaddr
+            terraform init -input=false
+            terraform apply -auto-approve
+  gcp-apply:
+    executor: terraform-executor
+    working_directory: ~/project
+    steps:
+      - checkout
+      - run:
+          command: |
+            curl -L -s https://releases.hashicorp.com/terraform/0.11.14/terraform_0.11.14_linux_amd64.zip -o /go/bin/terraform.zip && unzip /go/bin/terraform.zip -d /go/bin && chmod +x /go/bin/terraform
+            cd ~/project/gcp
+            terraform init -input=false
+            terraform apply -auto-approve
+
+workflows:
+  iac-pipeline:
+    jobs:
+      - start-workflow:
+          name: start-workflow
+      - test-iac:
+          name: test-iac-code
+          requires:
+            - start-workflow
+      - slack/approval-notification:
+          message: TF Apply Pending approval
+          color: '#42e2f4'
+          mentions: 'UEXB11CMR'
+          webhook: '${SLACK_WEBHOOK}'
+          requires:
+            - test-iac-code
+      - hold:
+          type: approval
+          requires:
+            - slack/approval-notification
+      - aws-apply:
+          requires:
+            - hold
+      - ibm-apply:
+          requires:
+            - hold
+      - gcp-apply:
+          requires:
+            - hold
+
